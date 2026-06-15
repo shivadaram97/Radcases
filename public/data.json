@@ -1,0 +1,63 @@
+{
+  "categories": [
+    {
+      "name": "MSK Cases",
+      "cases": [
+        {
+          "title": "Anterior cruciate ligament (ACL) tear",
+          "url": "https://radiopaedia.org/articles/anterior-cruciate-ligament-tear"
+        },
+        {
+          "title": "Bucket handle meniscal tear",
+          "url": "https://radiopaedia.org/articles/bucket-handle-meniscal-tear-1"
+        },
+        {
+          "title": "Hill-Sachs lesion",
+          "url": "https://radiopaedia.org/articles/hill-sachs-lesion"
+        },
+        {
+          "title": "Achilles tendon rupture",
+          "url": "https://radiopaedia.org/articles/achilles-tendon-rupture"
+        }
+      ]
+    },
+    {
+      "name": "Neuro Cases",
+      "cases": [
+        {
+          "title": "Glioblastoma",
+          "url": "https://radiopaedia.org/articles/glioblastoma"
+        },
+        {
+          "title": "Multiple sclerosis",
+          "url": "https://radiopaedia.org/articles/multiple-sclerosis"
+        },
+        {
+          "title": "Epidural hematoma",
+          "url": "https://radiopaedia.org/articles/extradural-haematoma"
+        },
+        {
+          "title": "Subarachnoid hemorrhage",
+          "url": "https://radiopaedia.org/articles/subarachnoid-haemorrhage"
+        }
+      ]
+    },
+    {
+      "name": "Chest Cases",
+      "cases": [
+        {
+          "title": "Lobar pneumonia",
+          "url": "https://radiopaedia.org/articles/lobar-pneumonia"
+        },
+        {
+          "title": "Pneumothorax",
+          "url": "https://radiopaedia.org/articles/pneumothorax"
+        },
+        {
+          "title": "Pulmonary embolism",
+          "url": "https://radiopaedia.org/articles/pulmonary-embolism"
+        }
+      ]
+    }
+  ]
+}

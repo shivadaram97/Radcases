@@ -1,0 +1,6 @@
+{
+  "name": "Radiopaedia Case Collection",
+  "description": "An offline-first, installable Radiopaedia Case Collection App with local IndexedDB storage and GitHub sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
