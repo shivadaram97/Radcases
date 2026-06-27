@@ -1,0 +1,105 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net - Default Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- REUSABLE PRIMITIVES & ID SAFEGUARDS ---
+    function isValidId(id) {
+      return id is string 
+        && id.size() > 0 
+        && id.size() <= 128 
+        && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() 
+        && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() 
+        && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- SCHEMA VALIDATORS ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email'])
+        && data.keys().size() >= 2
+        && data.keys().size() <= 6
+        && data.uid == request.auth.uid
+        && data.email is string
+        && data.email.size() <= 200;
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['id', 'userId', 'name', 'cases'])
+        && data.keys().size() >= 4
+        && data.keys().size() <= 8
+        && data.id is string
+        && data.id.size() <= 128
+        && data.userId == request.auth.uid
+        && data.name is string
+        && data.name.size() <= 128
+        && data.cases is list
+        && data.cases.size() <= 1000;
+    }
+
+    // --- FIREWALL PATH RULES ---
+    
+    // Connection test path
+    match /test/{docId} {
+      allow read: if true;
+    }
+    
+    // User profile documents path
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) 
+        && isEmailVerified() 
+        && isValidUserProfile(incoming())
+        && incoming().createdAt == request.time;
+      allow update: if isOwner(userId)
+        && isEmailVerified()
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time)
+        && incoming().updatedAt == request.time;
+      allow delete: if isOwner(userId);
+
+      // Categories subcollection path under each user namespace
+      match /categories/{categoryId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isEmailVerified()
+          && isValidId(categoryId)
+          && isValidCategory(incoming())
+          && (incoming().createdAt == request.time || incoming().createdAt == existing().createdAt);
+        allow update: if isOwner(userId)
+          && isEmailVerified()
+          && isValidId(categoryId)
+          && isValidCategory(incoming())
+          && incoming().id == existing().id
+          && incoming().userId == existing().userId
+          && (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time)
+          && incoming().updatedAt == request.time;
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}

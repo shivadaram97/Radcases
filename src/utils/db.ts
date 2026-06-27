@@ -20,6 +20,8 @@ export interface Category {
   name: string;
   cases: Case[];
   subcategories?: string[]; // Optional array of names (e.g., ['Knee', 'Shoulder'])
+  createdAt?: any;
+  updatedAt?: any;
 }
 
 export interface AppState {
@@ -58,10 +60,15 @@ export function sanitizeState(raw: any): AppState {
       };
     }).filter(c => c.title);
 
+    const catId = typeof cat.id === 'string' && cat.id.trim() ? cat.id.trim() : `cat_${Math.random().toString(36).substring(2, 11)}`;
+
     return {
+      id: catId,
       name: typeof cat.name === 'string' ? cat.name.trim() : 'Unnamed Category',
       cases: cleanCases,
       subcategories: Array.from(uniqueSubcatsSet),
+      createdAt: cat.createdAt || null,
+      updatedAt: cat.updatedAt || null,
     };
   });
 

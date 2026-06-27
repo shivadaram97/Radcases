@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Search, Plus, Pencil, Trash2, FolderPlus, BookOpen, ExternalLink, 
-  Menu, ChevronRight, Settings, Info, Download, Trash, BookMarked, HelpCircle, X 
+  Menu, ChevronRight, Settings, Info, Download, Trash, BookMarked, HelpCircle, X,
+  LogIn, LogOut, RefreshCw, ChevronUp, ChevronDown, GraduationCap, CheckCircle2, 
+  RotateCcw, Award, Eye, EyeOff
 } from 'lucide-react';
 import { loadState, saveState, AppState, Category, Case, sanitizeState } from './utils/db';
 import SettingsModal from './components/SettingsModal';
@@ -9,6 +11,38 @@ import EditCaseModal from './components/EditCaseModal';
 import EditCategoryModal from './components/EditCategoryModal';
 import EditSubcategoryModal from './components/EditSubcategoryModal';
 import ConfirmModal from './components/ConfirmModal';
+import PasscodeModal from './components/PasscodeModal';
+import { 
+  auth, 
+  signInWithGoogle, 
+  signOutUser, 
+  loadUserCategoriesFromFirestore, 
+  saveCategoryToFirestore, 
+  deleteCategoryFromFirestore, 
+  syncAllLocalToFirestore 
+} from './utils/firebase';
+
+// Helper function to dynamically highlight query matches in case titles
+function highlightText(text: string, search: string): React.ReactNode {
+  if (!search.trim()) return text;
+  
+  const regex = new RegExp(`(${search.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')})`, 'gi');
+  const parts = text.split(regex);
+  
+  return (
+    <>
+      {parts.map((part, i) => 
+        regex.test(part) ? (
+          <mark key={i} className="bg-yellow-200 dark:bg-yellow-500/40 text-slate-900 dark:text-white px-0.5 rounded-sm">
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      )}
+    </>
+  );
+}
 
 export default function App() {
   // Core Application Data and Indexes
@@ -51,10 +85,218 @@ export default function App() {
   const [confirmDeleteCaseOpen, setConfirmDeleteCaseOpen] = useState(false);
   const [confirmDeleteSubOpen, setConfirmDeleteSubOpen] = useState(false);
 
+  // Security Passcode Layer states
+  const [curatorPasscode, setCuratorPasscode] = useState<string>(() => {
+    return localStorage.getItem('radiopaedia_curator_passcode') || 'curator123';
+  });
+  const [curatorPasscodeConfigured, setCuratorPasscodeConfigured] = useState<boolean>(() => {
+    return localStorage.getItem('radiopaedia_curator_passcode_configured') === 'true';
+  });
+  const [isPasscodeModalOpen, setIsPasscodeModalOpen] = useState(false);
+  const [passcodeModalTitle, setPasscodeModalTitle] = useState('');
+  const [passcodeModalMessage, setPasscodeModalMessage] = useState('');
+  const [passcodeSuccessCallback, setPasscodeSuccessCallback] = useState<() => void>(() => () => {});
+
+  const handleUpdatePasscode = (newPasscode: string) => {
+    setCuratorPasscode(newPasscode);
+    localStorage.setItem('radiopaedia_curator_passcode', newPasscode);
+    setCuratorPasscodeConfigured(true);
+    localStorage.setItem('radiopaedia_curator_passcode_configured', 'true');
+    triggerToast('Passcode verified and stored successfully', 'success');
+  };
+
+  const runWithPasscode = (title: string, message: string, onSuccessAction: () => void) => {
+    setPasscodeModalTitle(title);
+    setPasscodeModalMessage(message);
+    setPasscodeSuccessCallback(() => onSuccessAction);
+    setIsPasscodeModalOpen(true);
+  };
+
+  const handleTriggerEditorModeToggle = () => {
+    if (courseMode) {
+      triggerToast("🔐 Curator tools are disabled while studying in Course Mode. Disable Course Mode first!", "info");
+      return;
+    }
+    if (!editorMode) {
+      runWithPasscode(
+        "🗝️ Enable Curation Privileges",
+        "Enter the secure curator passcode to activate Editing Mode. This permits modifying clinical structures, renaming subcategories, and deleting category catalogs.",
+        () => {
+          setEditorMode(true);
+          triggerToast("Editor Mode activated successfully", "success");
+        }
+      );
+    } else {
+      setEditorMode(false);
+      triggerToast("Editor Mode turned off", "info");
+    }
+  };
+
   // System status and toast bar
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'info' | null }>({ text: '', type: null });
 
-  // 1. First Bootstrapper + PWA Setup
+  // Firebase Auth and synchronization states
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
+
+  // Course Mode State
+  const [courseMode, setCourseMode] = useState<boolean>(() => {
+    return localStorage.getItem('casestacks_course_mode') === 'true';
+  });
+  const [courseDiagnosisOn, setCourseDiagnosisOn] = useState<boolean>(() => {
+    return localStorage.getItem('casestacks_course_diagnosis_on') !== 'false';
+  });
+  const [completedCaseUrls, setCompletedCaseUrls] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('casestacks_completed_urls');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [courseFilter, setCourseFilter] = useState<'all' | 'unseen' | 'studied'>('all');
+  const [isResetConfirming, setIsResetConfirming] = useState<boolean>(false);
+
+  // Toggle Course Mode
+  const handleToggleCourseMode = () => {
+    const nextMode = !courseMode;
+    setCourseMode(nextMode);
+    localStorage.setItem('casestacks_course_mode', nextMode ? 'true' : 'false');
+    if (nextMode) {
+      setEditorMode(false); // Automatically disable curator/editor mode when starting Course Mode!
+    }
+    triggerToast(nextMode ? '🎓 Course Mode Enabled! Track your progress.' : 'Course Mode Disabled.', 'success');
+  };
+
+  // Toggle Course Diagnosis Visibility
+  const handleToggleCourseDiagnosis = () => {
+    const nextVal = !courseDiagnosisOn;
+    setCourseDiagnosisOn(nextVal);
+    localStorage.setItem('casestacks_course_diagnosis_on', nextVal ? 'true' : 'false');
+    triggerToast(nextVal ? '👁️ Diagnosis Revealed' : '🙈 Diagnosis Hidden! Good luck with your studies (Case headers randomized to index codes).', 'info');
+  };
+
+  const toggleCaseCompleted = (url: string) => {
+    setCompletedCaseUrls(prev => {
+      const updated = prev.includes(url) ? prev.filter(u => u !== url) : [...prev, url];
+      localStorage.setItem('casestacks_completed_urls', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const resetCourseProgress = () => {
+    setCompletedCaseUrls([]);
+    localStorage.setItem('casestacks_completed_urls', JSON.stringify([]));
+    setIsResetConfirming(false);
+    triggerToast('All course study progress has been reset!', 'info');
+  };
+
+  // Cloudflare DNS 1.1.1.1 Accelerator Preference
+  const [dnsSpeedup, setDnsSpeedup] = useState<boolean>(() => {
+    return localStorage.getItem('casestacks_dns_speedup') !== 'false';
+  });
+
+  // Cloudflare 1.1.1.1 & Radiopaedia Image Accelerator connection pre-warming
+  useEffect(() => {
+    if (!dnsSpeedup) return;
+
+    const accelerationDomains = [
+      'https://1.1.1.1',
+      'https://1.0.0.1',
+      'https://cloudflare-dns.com',
+      'https://radiopaedia.org',
+      'https://images.radiopaedia.org',
+      'https://prod-images-static.radiopaedia.org',
+      'https://prod-images-static-radiopaedia-org.s3.amazonaws.com'
+    ];
+
+    const elements: HTMLElement[] = [];
+
+    accelerationDomains.forEach(domain => {
+      // DNS Prefetch Link
+      const prefetchLink = document.createElement('link');
+      prefetchLink.rel = 'dns-prefetch';
+      prefetchLink.href = domain;
+      document.head.appendChild(prefetchLink);
+      elements.push(prefetchLink);
+
+      // TCP/TLS Preconnect Link
+      const preconnectLink = document.createElement('link');
+      preconnectLink.rel = 'preconnect';
+      preconnectLink.href = domain;
+      preconnectLink.crossOrigin = 'anonymous';
+      document.head.appendChild(preconnectLink);
+      elements.push(preconnectLink);
+    });
+
+    return () => {
+      elements.forEach(el => {
+        if (el && el.parentNode) {
+          el.parentNode.removeChild(el);
+        }
+      });
+    };
+  }, [dnsSpeedup]);
+
+  // Drag and drop states/refs for clinical cases rearranging
+  const draggedIndexRef = useRef<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [dragActiveId, setDragActiveId] = useState<number | null>(null);
+
+  // 1a. Firebase Auth Sync Observer
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!active) return;
+      setCurrentUser(user);
+      if (user) {
+        setIsSyncingCloud(true);
+        try {
+          const cloudCats = await loadUserCategoriesFromFirestore(user.uid);
+          if (!active) return;
+          if (cloudCats && cloudCats.length > 0) {
+            const newState = { categories: cloudCats };
+            setState(newState);
+            await saveState(newState);
+            setActiveCategoryIndex(0);
+            triggerToast('Synced categories successfully from your cloud backup!', 'success');
+          } else {
+            // Empty cloud. Sync current local categories up to cloud
+            const local = await loadState();
+            if (local && local.categories.length > 0) {
+              triggerToast('Backing up offline categories to cloud storage...', 'info');
+              await syncAllLocalToFirestore(user.uid, local.categories);
+              const updatedCloud = await loadUserCategoriesFromFirestore(user.uid);
+              if (active && updatedCloud && updatedCloud.length > 0) {
+                setState({ categories: updatedCloud });
+                await saveState({ categories: updatedCloud });
+              }
+              triggerToast('Backup and synchronization complete!', 'success');
+            }
+          }
+        } catch (error) {
+          console.error('Firebase Auth sync error:', error);
+          triggerToast('Cloud sync is temporarily unavailable.', 'info');
+        } finally {
+          if (active) setIsSyncingCloud(false);
+        }
+      } else {
+        // Logged out: fallback to local repository cache
+        const local = await loadState();
+        if (active && local) {
+          setState(local);
+          setActiveCategoryIndex(local.categories.length > 0 ? 0 : null);
+        }
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
+  // 1b. First Bootstrapper + PWA Setup
   useEffect(() => {
     async function init() {
       // Clean load State from local IndexedDB
@@ -138,13 +380,16 @@ export default function App() {
 
   // 3. Category Operations
   const handleAddCategorySubmit = async (name: string) => {
-    const freshCat: Category = { name, cases: [] };
+    const freshCat: Category = { id: `cat_${Math.random().toString(36).substring(2, 11)}`, name, cases: [] };
     const latestState = {
       ...state,
       categories: [...state.categories, freshCat]
     };
     setState(latestState);
     await saveState(latestState);
+    if (auth.currentUser) {
+      await saveCategoryToFirestore(auth.currentUser.uid, freshCat);
+    }
     setIsCategoryModalOpen(false);
     setActiveCategoryIndex(latestState.categories.length - 1);
     setIsSidebarOpen(false);
@@ -159,6 +404,10 @@ export default function App() {
     const latestState = { ...state, categories: updatedCats };
     setState(latestState);
     await saveState(latestState);
+    if (auth.currentUser) {
+      const activeCat = updatedCats[activeCategoryIndex];
+      await saveCategoryToFirestore(auth.currentUser.uid, activeCat);
+    }
     setIsCategoryModalOpen(false);
     triggerToast('Renamed category successfully', 'success');
   };
@@ -166,18 +415,32 @@ export default function App() {
   const handleDeleteCategoryConfirm = async () => {
     if (activeCategoryIndex === null) return;
     const catToDelete = state.categories[activeCategoryIndex];
-    const updatedCats = state.categories.filter((_, idx) => idx !== activeCategoryIndex);
-    const latestState = { ...state, categories: updatedCats };
     
-    setState(latestState);
-    await saveState(latestState);
-    setConfirmDeleteCatOpen(false);
-    setActiveCategoryIndex(updatedCats.length > 0 ? 0 : null);
-    triggerToast(`Deleted category "${catToDelete.name}"`);
+    runWithPasscode(
+      "⚠️ Verify Deletion of Category",
+      `Please provide the curator passcode to permanently delete the clinical category "${catToDelete.name}". This will immediately erase all case entries and synced data.`,
+      async () => {
+        const updatedCats = state.categories.filter((_, idx) => idx !== activeCategoryIndex);
+        const latestState = { ...state, categories: updatedCats };
+        
+        setState(latestState);
+        await saveState(latestState);
+        if (auth.currentUser && catToDelete.id) {
+          await deleteCategoryFromFirestore(auth.currentUser.uid, catToDelete.id);
+        }
+        setConfirmDeleteCatOpen(false);
+        setActiveCategoryIndex(updatedCats.length > 0 ? 0 : null);
+        triggerToast(`Deleted category "${catToDelete.name}"`);
+      }
+    );
   };
 
   // 4. Case Operations
   const handleSaveCaseSubmit = async (title: string, url: string, subcategory?: string) => {
+    if (courseMode) {
+      triggerToast("🔐 Curation & case modifications are prohibited during Course Mode!", "info");
+      return;
+    }
     if (activeCategoryIndex === null) return;
 
     const updatedCats = state.categories.map((cat, catIdx) => {
@@ -210,6 +473,10 @@ export default function App() {
     const latestState = { ...state, categories: updatedCats };
     setState(latestState);
     await saveState(latestState);
+    if (auth.currentUser) {
+      const activeCat = updatedCats[activeCategoryIndex];
+      await saveCategoryToFirestore(auth.currentUser.uid, activeCat);
+    }
     setIsCaseModalOpen(false);
     setSelectedCaseIndex(null);
     triggerToast(caseModalEditing ? 'Updated case details' : 'Added new clinical case', 'success');
@@ -237,6 +504,10 @@ export default function App() {
     const latestState = { ...state, categories: updatedCats };
     setState(latestState);
     await saveState(latestState);
+    if (auth.currentUser) {
+      const activeCat = updatedCats[activeCategoryIndex];
+      await saveCategoryToFirestore(auth.currentUser.uid, activeCat);
+    }
     triggerToast(`Added subcategory "${trimmed}"`, 'success');
   };
 
@@ -261,6 +532,10 @@ export default function App() {
     const latestState = { ...state, categories: updatedCats };
     setState(latestState);
     await saveState(latestState);
+    if (auth.currentUser) {
+      const activeCat = updatedCats[activeCategoryIndex];
+      await saveCategoryToFirestore(auth.currentUser.uid, activeCat);
+    }
     if (activeSubcategoryFilter === oldName) {
       setActiveSubcategoryFilter(trimmed);
     }
@@ -284,6 +559,10 @@ export default function App() {
     const latestState = { ...state, categories: updatedCats };
     setState(latestState);
     await saveState(latestState);
+    if (auth.currentUser) {
+      const activeCat = updatedCats[activeCategoryIndex];
+      await saveCategoryToFirestore(auth.currentUser.uid, activeCat);
+    }
     if (activeSubcategoryFilter === subName) {
       setActiveSubcategoryFilter('all');
     }
@@ -301,12 +580,22 @@ export default function App() {
 
   const handleDeleteSubcategoryConfirm = async () => {
     if (!selectedSubcategoryName) return;
-    await handleDeleteSubcategory(selectedSubcategoryName);
-    setConfirmDeleteSubOpen(false);
-    setSelectedSubcategoryName('');
+    runWithPasscode(
+      "📂 Verify Deletion of Subcategory",
+      `Please provide the curator passcode to delete the subcategory "${selectedSubcategoryName}". Medical studies inside will be preserved.`,
+      async () => {
+        await handleDeleteSubcategory(selectedSubcategoryName);
+        setConfirmDeleteSubOpen(false);
+        setSelectedSubcategoryName('');
+      }
+    );
   };
 
   const handleDeleteCaseConfirm = async () => {
+    if (courseMode) {
+      triggerToast("🔐 Case deletion is prohibited during Course Mode!", "info");
+      return;
+    }
     if (activeCategoryIndex === null || selectedCaseIndex === null) return;
     
     const updatedCats = state.categories.map((cat, catIdx) => {
@@ -322,6 +611,10 @@ export default function App() {
     const latestState = { ...state, categories: updatedCats };
     setState(latestState);
     await saveState(latestState);
+    if (auth.currentUser) {
+      const activeCat = updatedCats[activeCategoryIndex];
+      await saveCategoryToFirestore(auth.currentUser.uid, activeCat);
+    }
     setConfirmDeleteCaseOpen(false);
     setSelectedCaseIndex(null);
     triggerToast('Removed case file');
@@ -332,6 +625,9 @@ export default function App() {
     const sanitized = sanitizeState(newState);
     setState(sanitized);
     await saveState(sanitized);
+    if (auth.currentUser) {
+      await syncAllLocalToFirestore(auth.currentUser.uid, sanitized.categories);
+    }
     if (sanitized.categories.length > 0) {
       setActiveCategoryIndex(0);
     } else {
@@ -340,33 +636,217 @@ export default function App() {
     triggerToast('Clinical catalog sync complete!', 'success');
   };
 
+  // 5a. Manual cloud synchronization trigger
+  const handleManualSync = async () => {
+    if (!auth.currentUser) {
+      triggerToast('Please sign in with Google to sync.', 'info');
+      return;
+    }
+    setIsSyncingCloud(true);
+    triggerToast('Synchronizing with Google Firestore...', 'info');
+    try {
+      const sanitized = sanitizeState(state);
+      // Upload current local state to Firestore
+      await syncAllLocalToFirestore(auth.currentUser.uid, sanitized.categories);
+      
+      // Load fresh categories from Firestore to guarantee alignment
+      const remoteCats = await loadUserCategoriesFromFirestore(auth.currentUser.uid);
+      if (remoteCats && remoteCats.length > 0) {
+        const newState = { categories: remoteCats };
+        setState(newState);
+        await saveState(newState);
+      }
+      triggerToast('Database fully synchronized with Google Cloud!', 'success');
+    } catch (error) {
+      console.error('Google manual sync error:', error);
+      triggerToast('Sync failed. Please check network connection.', 'info');
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  // 5b. Rearrange clinical cases inside list (Drag & Drop)
+  const handleReorderCases = async (srcIdx: number, destIdx: number) => {
+    if (activeCategoryIndex === null || srcIdx === destIdx) return;
+    const cat = state.categories[activeCategoryIndex];
+    if (!cat) return;
+    const updatedCases = [...cat.cases];
+    
+    // Splice from src and insert at dest
+    const [removed] = updatedCases.splice(srcIdx, 1);
+    updatedCases.splice(destIdx, 0, removed);
+    
+    const updatedCats = state.categories.map((c, idx) => {
+      if (idx === activeCategoryIndex) {
+        return {
+          ...c,
+          cases: updatedCases
+        };
+      }
+      return c;
+    });
+    
+    const latestState = { ...state, categories: updatedCats };
+    setState(latestState);
+    await saveState(latestState);
+    
+    if (auth.currentUser) {
+      const activeCat = updatedCats[activeCategoryIndex];
+      await saveCategoryToFirestore(auth.currentUser.uid, activeCat);
+    }
+    triggerToast('Rearranged clinical cases!', 'success');
+  };
+
+  const handleMoveCase = async (index: number, direction: 'up' | 'down') => {
+    if (activeCategoryIndex === null) return;
+    const cat = state.categories[activeCategoryIndex];
+    if (!cat) return;
+    
+    const targetIdx = direction === 'up' ? index - 1 : index + 1;
+    if (targetIdx < 0 || targetIdx >= cat.cases.length) return;
+    
+    await handleReorderCases(index, targetIdx);
+  };
+
   // Filter computation
   const activeCategory = activeCategoryIndex !== null ? state.categories[activeCategoryIndex] : null;
 
   // Single card helper to ensure visual styling is beautifully self-contained and DRY
-  const renderCaseCard = (cs: Case, realIdx: number) => {
+  const renderCaseCard = (cs: Case, realIdx: number, displayNum?: number) => {
     return (
       <div
         id={`case-card-${realIdx}`}
         key={realIdx}
-        className="group relative rounded-2xl border border-slate-200 bg-white p-5 hover:border-blue-500 shadow-sm transition duration-200 ease-in-out hover:shadow-md dark:border-slate-800/80 dark:bg-slate-900 dark:hover:border-blue-500 flex flex-col justify-between"
+        draggable={editorMode && dragActiveId === realIdx}
+        onDragStart={(e) => {
+          if (!editorMode || dragActiveId !== realIdx) {
+            e.preventDefault();
+            return;
+          }
+          draggedIndexRef.current = realIdx;
+          e.dataTransfer.effectAllowed = 'move';
+          e.currentTarget.style.opacity = '0.45';
+        }}
+        onDragEnd={(e) => {
+          draggedIndexRef.current = null;
+          setDragOverIndex(null);
+          setDragActiveId(null);
+          e.currentTarget.style.opacity = '';
+        }}
+        onDragOver={(e) => {
+          if (editorMode && draggedIndexRef.current !== null) {
+            e.preventDefault();
+          }
+        }}
+        onDragEnter={(e) => {
+          if (editorMode && draggedIndexRef.current !== null && draggedIndexRef.current !== realIdx) {
+            setDragOverIndex(realIdx);
+          }
+        }}
+        onDragLeave={() => {
+          if (dragOverIndex === realIdx) {
+            setDragOverIndex(null);
+          }
+        }}
+        onDrop={async (e) => {
+          if (editorMode && draggedIndexRef.current !== null) {
+            e.preventDefault();
+            const srcIdx = draggedIndexRef.current;
+            if (srcIdx !== realIdx) {
+              await handleReorderCases(srcIdx, realIdx);
+            }
+          }
+          setDragOverIndex(null);
+          setDragActiveId(null);
+        }}
+        className={`group relative rounded-2xl border p-5 shadow-sm transition duration-200 ease-in-out flex flex-col justify-between ${
+          editorMode 
+            ? (dragActiveId === realIdx ? 'cursor-grabbing select-none scale-[1.012]' : 'cursor-default') 
+            : ''
+        } ${
+          dragOverIndex === realIdx 
+            ? 'border-blue-500 bg-blue-50/20 ring-2 ring-blue-500/20 dark:border-blue-400 dark:bg-blue-950/25 scale-[1.015]' 
+            : (courseMode && completedCaseUrls.includes(cs.url)
+                ? 'border-emerald-300 dark:border-emerald-800/80 bg-emerald-50/15 dark:bg-emerald-950/10 hover:border-emerald-500 hover:shadow-md'
+                : 'border-slate-200 bg-white hover:border-blue-500 hover:shadow-md dark:border-slate-800/80 dark:bg-slate-900 dark:hover:border-blue-500')
+        }`}
       >
         <div>
           {/* Clinical classification icon tag */}
           <div className="flex items-center justify-between mb-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400">
-              <BookOpen className="h-4.5 w-4.5" />
+            <div className="flex items-center gap-1.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400">
+                <BookOpen className="h-4.5 w-4.5" />
+              </div>
+              {courseMode && (
+                <button
+                  id={`toggle-complete-case-${realIdx}`}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleCaseCompleted(cs.url);
+                  }}
+                  className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all ${
+                    completedCaseUrls.includes(cs.url)
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                      : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-slate-750/30 text-slate-400 hover:text-slate-600 hover:border-slate-350 dark:hover:text-slate-200'
+                  }`}
+                  title={completedCaseUrls.includes(cs.url) ? "Marked as Studied - Click to undo" : "Mark as Studied"}
+                >
+                  <CheckCircle2 className={`h-3 w-3 ${completedCaseUrls.includes(cs.url) ? 'fill-emerald-500 text-white dark:text-emerald-950' : ''}`} />
+                  <span>{completedCaseUrls.includes(cs.url) ? 'Studied' : 'Unseen'}</span>
+                </button>
+              )}
             </div>
             
-            {cs.subcategory && (
-              <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200/40 dark:border-slate-750/30 text-[9px] px-2 py-0.5 font-bold text-slate-500 dark:text-slate-400 tracking-wider">
+            {editorMode ? (
+              <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                <span 
+                  className="text-[10px] text-slate-400 dark:text-slate-500 font-semibold select-none flex items-center gap-1 font-mono cursor-grab active:cursor-grabbing px-2 py-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-705 hover:text-slate-700 dark:hover:text-slate-200 border border-slate-200/50 dark:border-slate-750/30 transition duration-150"
+                  onMouseDown={() => setDragActiveId(realIdx)}
+                  onMouseUp={() => setDragActiveId(null)}
+                  onMouseLeave={() => setDragActiveId(null)}
+                  onTouchStart={() => setDragActiveId(realIdx)}
+                  onTouchEnd={() => setDragActiveId(null)}
+                  title="Drag on desktop to reorder"
+                >
+                  ⋮⋮ Drag
+                </span>
+                <div className="flex items-center rounded border border-slate-200/50 dark:border-slate-750/30 overflow-hidden bg-slate-100 dark:bg-slate-800">
+                  <button
+                    id={`move-up-btn-${realIdx}`}
+                    type="button"
+                    onClick={() => handleMoveCase(realIdx, 'up')}
+                    disabled={realIdx === 0}
+                    title="Move Study Up (useful on phone)"
+                    className="p-1 px-1.5 text-slate-500 hover:text-slate-805 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 disabled:pointer-events-none transition cursor-pointer"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <div className="h-4 w-[1px] bg-slate-200 dark:bg-slate-700"></div>
+                  <button
+                    id={`move-down-btn-${realIdx}`}
+                    type="button"
+                    onClick={() => handleMoveCase(realIdx, 'down')}
+                    disabled={activeCategory ? realIdx === activeCategory.cases.length - 1 : true}
+                    title="Move Study Down (useful on phone)"
+                    className="p-1 px-1.5 text-slate-500 hover:text-slate-805 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 disabled:pointer-events-none transition cursor-pointer"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ) : cs.subcategory && (
+              <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200/40 dark:border-slate-750/30 text-[9px] px-2 py-0.5 font-bold text-slate-500 dark:text-slate-400 tracking-wider animate-fade-in">
                 🏷️ {cs.subcategory}
               </span>
             )}
           </div>
           
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition leading-snug">
-            {cs.title}
+            {courseMode && !courseDiagnosisOn 
+              ? `Case #${displayNum !== undefined ? displayNum : realIdx + 1}` 
+              : highlightText(cs.title, searchQuery)}
           </h3>
         </div>
 
@@ -378,6 +858,15 @@ export default function App() {
             target="_blank"
             rel="noopener noreferrer"
             referrerPolicy="no-referrer"
+            onClick={() => {
+              if (courseMode && !completedCaseUrls.includes(cs.url)) {
+                toggleCaseCompleted(cs.url);
+                triggerToast(
+                  `Studied ${courseMode && !courseDiagnosisOn ? `Case #${displayNum !== undefined ? displayNum : realIdx + 1}` : `case: ${cs.title}`}`,
+                  'success'
+                );
+              }
+            }}
             className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center gap-1 group-hover:underline"
           >
             Open Study Case
@@ -386,7 +875,41 @@ export default function App() {
 
           {/* Editors inline buttons */}
           {editorMode && (
-            <div className="flex items-center space-x-1.5">
+            <div className="flex items-center space-x-1">
+              {/* Move Up */}
+              <button
+                id={`move-up-case-btn-${realIdx}`}
+                type="button"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (realIdx > 0) {
+                    await handleReorderCases(realIdx, realIdx - 1);
+                  }
+                }}
+                disabled={realIdx === 0}
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-blue-500 dark:hover:bg-slate-850 dark:hover:text-blue-400 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition"
+                title="Move up in list"
+              >
+                <ChevronUp className="h-4 w-4" />
+              </button>
+
+              {/* Move Down */}
+              <button
+                id={`move-down-case-btn-${realIdx}`}
+                type="button"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (activeCategory && realIdx < activeCategory.cases.length - 1) {
+                    await handleReorderCases(realIdx, realIdx + 1);
+                  }
+                }}
+                disabled={!activeCategory || realIdx === activeCategory.cases.length - 1}
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-blue-500 dark:hover:bg-slate-850 dark:hover:text-blue-400 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition"
+                title="Move down in list"
+              >
+                <ChevronDown className="h-4 w-4" />
+              </button>
+
               <button
                 id={`edit-case-btn-${realIdx}`}
                 onClick={() => {
@@ -421,7 +944,17 @@ export default function App() {
     if (!activeCategory) return null;
 
     const searchLower = searchQuery.toLowerCase();
-    const matchesSearch = (cs: Case) => cs.title.toLowerCase().includes(searchLower);
+    const matchesSearch = (cs: Case) => {
+      const matchText = cs.title.toLowerCase().includes(searchLower);
+      if (!matchText) return false;
+      
+      if (courseMode) {
+        const isCompleted = completedCaseUrls.includes(cs.url);
+        if (courseFilter === 'unseen') return !isCompleted;
+        if (courseFilter === 'studied') return isCompleted;
+      }
+      return true;
+    };
 
     // If a particular subcategory is filtered inside pills view
     if (activeSubcategoryFilter !== 'all') {
@@ -439,7 +972,7 @@ export default function App() {
             </h4>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {filtered.map(cs => renderCaseCard(cs, activeCategory.cases.indexOf(cs)))}
+            {filtered.map((cs, idx) => renderCaseCard(cs, activeCategory.cases.indexOf(cs), idx + 1))}
           </div>
           {filtered.length === 0 && (
             <div className="text-center py-12 text-xs text-slate-400 dark:text-slate-500">
@@ -459,14 +992,17 @@ export default function App() {
       const filtered = activeCategory.cases.filter(matchesSearch);
       return (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filtered.map(cs => renderCaseCard(cs, activeCategory.cases.indexOf(cs)))}
+          {filtered.map((cs, idx) => renderCaseCard(cs, activeCategory.cases.indexOf(cs), idx + 1))}
         </div>
       );
     }
 
     // Has subcategories - group them vertically beautifully!
     const uncategorizedCases = activeCategory.cases.filter(c => !c.subcategory);
-    const hasUncategorizedMatches = uncategorizedCases.filter(matchesSearch).length > 0;
+    const matchedUncategorized = uncategorizedCases.filter(matchesSearch);
+    const hasUncategorizedMatches = matchedUncategorized.length > 0;
+
+    let runningCounter = 0;
 
     return (
       <div className="space-y-10 animate-fade-in animate-duration-500">
@@ -479,7 +1015,10 @@ export default function App() {
               </h4>
             </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {uncategorizedCases.filter(matchesSearch).map(cs => renderCaseCard(cs, activeCategory.cases.indexOf(cs)))}
+              {matchedUncategorized.map(cs => {
+                runningCounter++;
+                return renderCaseCard(cs, activeCategory.cases.indexOf(cs), runningCounter);
+              })}
             </div>
             {!hasUncategorizedMatches && searchQuery && (
               <p className="text-xs text-slate-400 dark:text-slate-500 italic pl-1">No matching cases</p>
@@ -501,7 +1040,10 @@ export default function App() {
                 </h4>
               </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {matched.map(cs => renderCaseCard(cs, activeCategory.cases.indexOf(cs)))}
+                {matched.map(cs => {
+                  runningCounter++;
+                  return renderCaseCard(cs, activeCategory.cases.indexOf(cs), runningCounter);
+                })}
               </div>
               {matched.length === 0 && searchQuery && (
                 <p className="text-xs text-slate-400 dark:text-slate-500 italic pl-1">No matching cases</p>
@@ -514,7 +1056,7 @@ export default function App() {
   };
 
   return (
-    <div id="radiopaedia-app-root" className="flex flex-col h-full bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased selection:bg-blue-500/30">
+    <div id="casestacks-app-root" className="flex flex-col h-full bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased selection:bg-blue-500/30">
       
       {/* 1. Global Custom Header Notification Banner */}
       {toast.text && (
@@ -553,10 +1095,10 @@ export default function App() {
               </div>
               <div>
                 <h1 className="text-base font-bold tracking-tight text-slate-900 dark:text-white font-display md:text-lg">
-                  Radiopaedia
+                  CaseStacks
                 </h1>
                 <p className="hidden text-[10px] md:block font-mono text-slate-400 dark:text-slate-500">
-                  Case Collection Hub
+                  Study Registry
                 </p>
               </div>
             </div>
@@ -591,6 +1133,75 @@ export default function App() {
             >
               <Settings className="h-5 w-5" />
             </button>
+
+            {/* Cloud Sync Status and Auth Controls */}
+            {currentUser ? (
+              <div className="flex items-center gap-2 border-l border-slate-200 dark:border-slate-800 pl-2">
+                {currentUser.photoURL ? (
+                  <img
+                    id="user-profile-avatar"
+                    src={currentUser.photoURL}
+                    alt={currentUser.displayName || 'User Profile'}
+                    className="h-8 w-8 rounded-full border border-blue-500 shadow-sm"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div id="user-profile-avatar-placeholder" className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-300 flex items-center justify-center font-bold text-xs border border-blue-200 dark:border-blue-900">
+                    {(currentUser.displayName || currentUser.email || 'U').charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div className="hidden flex-col text-left sm:flex">
+                  <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 leading-tight truncate max-w-[90px]">
+                    {currentUser.displayName || 'Clinical Curator'}
+                  </span>
+                  <span className="text-[9px] font-semibold text-blue-500 leading-none">
+                    {isSyncingCloud ? 'Syncing...' : 'Connected'}
+                  </span>
+                </div>
+                
+                {/* Manual Sync Button */}
+                <button
+                  id="navbar-manual-sync-btn"
+                  type="button"
+                  onClick={handleManualSync}
+                  disabled={isSyncingCloud}
+                  className="rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-600 disabled:opacity-50 p-1.5 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/40 transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+                  title="Force Manual Sync"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+                  <span className="hidden md:inline">Sync</span>
+                </button>
+
+                <button
+                  id="user-sign-out-btn"
+                  onClick={async () => {
+                    await signOutUser();
+                    triggerToast('Logged out of Google secure session.', 'info');
+                  }}
+                  className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-red-500 dark:hover:bg-slate-800 transition"
+                  title="Sign out of Google"
+                >
+                  <LogOut className="h-4 w-4" />
+                </button>
+              </div>
+            ) : (
+              <button
+                id="user-sign-in-btn"
+                onClick={async () => {
+                  try {
+                    await signInWithGoogle();
+                    triggerToast('Signed in successfully with Google Cloud Active!', 'success');
+                  } catch (e) {
+                    triggerToast('Failed to sign in with Google.', 'info');
+                  }
+                }}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-200/85 bg-white hover:bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800 dark:text-slate-300 shadow-sm transition"
+                title="Synchronize and backup cases to Google Secure Account"
+              >
+                <LogIn className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400" />
+                <span>Google Sync</span>
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -753,9 +1364,25 @@ export default function App() {
                         </button>
                       )}
                     </div>
-                    <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 font-mono block mt-0.5">
-                      Collection Registry: {activeCategory.cases.length} entries
-                    </span>
+                    <div className="flex flex-wrap items-center gap-3 mt-1.5">
+                      <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 font-mono">
+                        Collection Registry: {activeCategory.cases.length} entries
+                      </span>
+                      <button
+                        id="toggle-course-mode-btn"
+                        type="button"
+                        onClick={handleToggleCourseMode}
+                        className={`text-[9px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full flex items-center gap-1 transition ${
+                          courseMode
+                            ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm hover:from-blue-700 hover:to-indigo-700'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                        }`}
+                        title="Toggle learning progression tracking & filters"
+                      >
+                        <GraduationCap className="h-3 w-3" />
+                        <span>{courseMode ? 'Course Mode: ON' : 'Turn On Course Mode'}</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Real-time search filter bar */}
@@ -780,6 +1407,195 @@ export default function App() {
                     )}
                   </div>
                 </div>
+
+                {/* 1.1 Course Mode Progress Panel */}
+                {courseMode && (() => {
+                  const currentCourseCases = activeSubcategoryFilter === 'all' 
+                    ? activeCategory.cases 
+                    : (activeSubcategoryFilter === '__uncategorized__' 
+                        ? activeCategory.cases.filter(c => !c.subcategory) 
+                        : activeCategory.cases.filter(c => c.subcategory === activeSubcategoryFilter));
+                  
+                  const totalInFocus = currentCourseCases.length;
+                  const completedInFocus = currentCourseCases.filter(c => completedCaseUrls.includes(c.url)).length;
+                  const activeProgressPercent = totalInFocus > 0 ? Math.round((completedInFocus / totalInFocus) * 100) : 0;
+                  
+                  let rankLabel = "Unstarted Residency";
+                  if (activeProgressPercent > 0 && activeProgressPercent < 40) rankLabel = "Resident in Training";
+                  else if (activeProgressPercent >= 40 && activeProgressPercent < 80) rankLabel = "Advanced Clinical Fellow";
+                  else if (activeProgressPercent >= 80 && activeProgressPercent < 100) rankLabel = "Radiology Specialist";
+                  else if (activeProgressPercent === 100) rankLabel = "Subspecialty Master 🏆";
+
+                  return (
+                    <div 
+                      id="course-mode-hub-panel" 
+                      className="bg-white dark:bg-slate-900 border border-blue-100 dark:border-slate-800/80 rounded-2xl p-5 shadow-sm space-y-4 animate-fade-in"
+                    >
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-950/80 dark:text-blue-400">
+                              <GraduationCap className="h-3.5 w-3.5" />
+                            </span>
+                            <span className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest font-mono">
+                              Clinical Course Pathway
+                            </span>
+                          </div>
+                          <h3 className="text-sm font-bold text-slate-800 dark:text-white">
+                            Course Focus: {activeSubcategoryFilter === 'all' 
+                              ? `All ${activeCategory.name} studies` 
+                              : (activeSubcategoryFilter === '__uncategorized__' 
+                                  ? 'General/uncategorized studies' 
+                                  : `Knee / ${activeSubcategoryFilter} subspecialty`
+                                )}
+                          </h3>
+                          <p className="text-xs text-slate-400 dark:text-slate-450 max-w-xl">
+                            Read external clinical studies to automatically track files you've masterfully researched. Check/uncheck studies manually to record curriculum completion.
+                          </p>
+                          
+                          <div className="flex flex-wrap items-center gap-3 pt-3">
+                            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest font-mono">
+                              Diagnosis Viz:
+                            </span>
+                            <button
+                              id="toggle-course-diagnosis-btn"
+                              type="button"
+                              onClick={handleToggleCourseDiagnosis}
+                              className={`text-[10px] font-bold px-2.5 py-1 rounded-xl flex items-center gap-1.5 transition border-2 cursor-pointer shadow-sm ${
+                                courseDiagnosisOn
+                                  ? 'bg-blue-50/70 border-blue-200/50 hover:bg-blue-100/70 text-blue-700 dark:bg-blue-950/30 dark:border-blue-900/40 dark:text-blue-350'
+                                  : 'bg-amber-50/70 border-amber-200/50 hover:bg-amber-100/70 text-amber-700 dark:bg-amber-950/30 dark:border-amber-900/40 dark:text-amber-300'
+                              }`}
+                              title="Turn On/Off Diagnosis heading. Off shows generic Case # numbers for self-assessment."
+                            >
+                              {courseDiagnosisOn ? (
+                                <>
+                                  <Eye className="h-3.5 w-3.5 text-blue-500" />
+                                  <span>Revealed (ON)</span>
+                                </>
+                              ) : (
+                                <>
+                                  <EyeOff className="h-3.5 w-3.5 text-amber-600" />
+                                  <span>Self-Test (OFF)</span>
+                                </>
+                              )}
+                            </button>
+
+
+                          </div>
+                        </div>
+
+                        {/* Rank Badge and Reset */}
+                        <div className="flex items-center gap-3 self-start md:self-center">
+                          <div className="rounded-xl bg-orange-50 dark:bg-orange-950/20 px-3 py-1.5 border border-orange-100 dark:border-orange-900/30 text-center shrink-0">
+                            <span className="text-[9px] uppercase font-bold text-orange-500 block leading-none">Curator Rank</span>
+                            <span className="text-xs font-bold text-orange-600 dark:text-orange-400 block mt-1">{rankLabel}</span>
+                          </div>
+                          
+                          {isResetConfirming ? (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                id="reset-course-progress-confirm"
+                                type="button"
+                                onClick={() => resetCourseProgress()}
+                                className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shrink-0 animate-pulse"
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                                <span>Are you sure?</span>
+                              </button>
+                              <button
+                                id="reset-course-progress-cancel"
+                                type="button"
+                                onClick={() => setIsResetConfirming(false)}
+                                className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-805 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] font-semibold transition cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              id="reset-course-progress-btn"
+                              type="button"
+                              onClick={() => setIsResetConfirming(true)}
+                              className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-850 hover:text-red-500 dark:hover:text-red-400 transition text-slate-400 text-xs font-semibold flex items-center gap-1 cursor-pointer shrink-0"
+                              title="Reset all completed marks"
+                            >
+                              <RotateCcw className="h-3.5 w-3.5" />
+                              <span>Reset Progress</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Progress bar Zone */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-slate-600 dark:text-slate-350">
+                            Progress meter: <strong className="text-blue-600 dark:text-blue-400">{completedInFocus}</strong> of {totalInFocus} cases mastered
+                          </span>
+                          <span className="font-mono font-bold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">
+                            {activeProgressPercent}% Completion
+                          </span>
+                        </div>
+                        
+                        <div className="w-full bg-slate-100 dark:bg-slate-850/80 rounded-full h-3 overflow-hidden border border-slate-200/20">
+                          <div 
+                            className="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-500 h-full rounded-full transition-all duration-1000 ease-out" 
+                            style={{ width: `${activeProgressPercent}%` }}
+                          ></div>
+                        </div>
+                      </div>
+
+                      {/* Filter segmentation bar */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1 border-t border-slate-100 dark:border-slate-800/40">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                          Quick study filter:
+                        </span>
+                        
+                        <div className="flex flex-wrap items-center gap-1 bg-slate-100/50 dark:bg-slate-950 p-1 rounded-xl border border-slate-200/40 dark:border-slate-900">
+                          <button
+                            id="course-filter-all"
+                            type="button"
+                            onClick={() => setCourseFilter('all')}
+                            className={`text-xs px-3.5 py-1.5 rounded-lg font-semibold transition ${
+                              courseFilter === 'all'
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                                : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            📚 Show All ({totalInFocus})
+                          </button>
+                          <button
+                            id="course-filter-unseen"
+                            type="button"
+                            onClick={() => setCourseFilter('unseen')}
+                            className={`text-xs px-3.5 py-1.5 rounded-lg font-semibold transition flex items-center gap-1 ${
+                              courseFilter === 'unseen'
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm text-blue-600 dark:text-blue-400'
+                                : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            👁️ Unseen ({totalInFocus - completedInFocus})
+                          </button>
+                          <button
+                            id="course-filter-studied"
+                            type="button"
+                            onClick={() => setCourseFilter('studied')}
+                            className={`text-xs px-3.5 py-1.5 rounded-lg font-semibold transition flex items-center gap-1 ${
+                              courseFilter === 'studied'
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm text-emerald-600 dark:text-emerald-400'
+                                : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            ✅ Studied ({completedInFocus})
+                          </button>
+                        </div>
+                      </div>
+
+                    </div>
+                  );
+                })()}
+
                        {/* Ribbon of subcategory filters */}
                 {activeCategory && ((activeCategory.subcategories && activeCategory.subcategories.length > 0) || editorMode) && (
                   <div id="subcategory-filters" className="flex flex-wrap items-center gap-2 border-b border-dashed border-slate-200 dark:border-slate-800/80 pb-5">
@@ -976,7 +1792,7 @@ export default function App() {
                 {editorMode === false && (
                   <button 
                     id="welcome-enable-editor-btn"
-                    onClick={() => setEditorMode(true)}
+                    onClick={handleTriggerEditorModeToggle}
                     className="rounded-xl bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/40 px-4 py-2.5 text-xs font-medium cursor-pointer transition border border-dashed border-blue-200 dark:border-blue-900/40"
                   >
                     💡 Enable Curator Mode to add data
@@ -1001,6 +1817,17 @@ export default function App() {
         onImportState={handleImportRemoteState}
         darkMode={darkMode}
         setDarkMode={setDarkMode}
+        currentUser={currentUser}
+        isSyncingCloud={isSyncingCloud}
+        onManualSync={handleManualSync}
+        onGoogleSignIn={async () => { await signInWithGoogle(); }}
+        onTriggerEditorModeToggle={handleTriggerEditorModeToggle}
+        dnsSpeedup={dnsSpeedup}
+        setDnsSpeedup={(enabled) => {
+          setDnsSpeedup(enabled);
+          localStorage.setItem('casestacks_dns_speedup', enabled ? 'true' : 'false');
+          triggerToast(enabled ? '⚡ Cloudflare Accelerator Activated!' : 'Cloudflare Accelerator Deactivated.', 'info');
+        }}
       />
 
       {/* Adding/Editing Case dialog */}
@@ -1070,6 +1897,19 @@ export default function App() {
           setConfirmDeleteSubOpen(false);
           setSelectedSubcategoryName('');
         }}
+      />
+
+      {/* Security Passcode Interceptor Modal */}
+      <PasscodeModal
+        isOpen={isPasscodeModalOpen}
+        title={passcodeModalTitle}
+        message={passcodeModalMessage}
+        correctPasscode={curatorPasscode}
+        isConfigured={curatorPasscodeConfigured}
+        currentUser={currentUser}
+        onChangePasscode={handleUpdatePasscode}
+        onSuccess={passcodeSuccessCallback}
+        onClose={() => setIsPasscodeModalOpen(false)}
       />
 
     </div>

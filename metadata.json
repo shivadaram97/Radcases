@@ -1,6 +1,6 @@
 {
-  "name": "Radiopaedia Case Collection",
-  "description": "An offline-first, installable Radiopaedia Case Collection App with local IndexedDB storage and GitHub sync.",
+  "name": "CaseStacks Clinical Registry",
+  "description": "An offline-first, installable Clinical Case Registry App with local IndexedDB storage, cross-device sync and customized curator options.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

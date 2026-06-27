@@ -33,7 +33,7 @@ export default function EditCaseModal({
   useEffect(() => {
     if (isOpen) {
       setTitle(initialTitle);
-      setUrl(initialUrl || 'https://radiopaedia.org/cases/');
+      setUrl(initialUrl || 'https://');
       setError('');
       
       if (initialSubcategory) {
@@ -69,8 +69,8 @@ export default function EditCaseModal({
     }
 
     let formattedUrl = url.trim();
-    if (!formattedUrl) {
-      setError('Please provide the Radiopaedia link.');
+    if (!formattedUrl || formattedUrl === 'https://') {
+      setError('Please provide a valid medical study or clinical case URL link.');
       return;
     }
 
@@ -111,7 +111,7 @@ export default function EditCaseModal({
         <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-slate-800">
           <h3 className="text-lg font-semibold text-slate-900 dark:text-white font-display flex items-center gap-2">
             <BookOpen className="h-5 w-5 text-blue-500" />
-            {isEditing ? '✏️ Edit Case details' : '➕ Add Radiopaedia Case'}
+            {isEditing ? '✏️ Edit Case details' : '➕ Add Clinical Case Study'}
           </h3>
           <button 
             id="close-case-modal-btn"
@@ -142,7 +142,7 @@ export default function EditCaseModal({
               placeholder="e.g., ACL tear with segond fracture"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-blue-500 dark:focus:bg-slate-900 dark:focus:ring-blue-950/50 transition duration-150"
+              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white dark:placeholder:text-slate-500 dark:focus:bg-slate-900 dark:focus:ring-blue-950/50 transition duration-150"
             />
           </div>
 
@@ -154,7 +154,7 @@ export default function EditCaseModal({
               id="case-subcategory"
               value={selectedSub}
               onChange={(e) => handleSubcategoryChange(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white dark:focus:border-blue-500 dark:focus:bg-slate-900 dark:focus:ring-blue-950/50 transition duration-150"
+              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white dark:focus:bg-slate-900 dark:focus:ring-blue-950/50 transition duration-150"
             >
               <option value="">None (Uncategorized / General)</option>
               {availableSubcategories.map((sub, i) => (
@@ -175,7 +175,7 @@ export default function EditCaseModal({
                 placeholder="e.g., Knee or Spine"
                 value={newSubName}
                 onChange={(e) => setNewSubName(e.target.value)}
-                className="w-full rounded-lg border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-blue-500 dark:focus:bg-slate-900 dark:focus:ring-blue-950/50 transition duration-150"
+                className="w-full rounded-lg border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white dark:placeholder:text-slate-500 dark:focus:bg-slate-900 dark:focus:ring-blue-950/50 transition duration-150"
               />
             </div>
           )}
@@ -183,16 +183,16 @@ export default function EditCaseModal({
           <div>
             <label htmlFor="case-url" className="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5 flex items-center gap-1">
               <Link className="h-3.5 w-3.5 text-blue-500" />
-              Radiopaedia Case Link (URL)
+              Clinical Case Link / Study URL
             </label>
             <input
               id="case-url"
               type="text"
               required
-              placeholder="https://radiopaedia.org/cases/..."
+              placeholder="e.g., https://radiopaedia.org/cases/..."
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-blue-500 dark:focus:bg-slate-900 dark:focus:ring-blue-950/50 transition duration-150"
+              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white dark:placeholder:text-slate-500 dark:focus:bg-slate-900 dark:focus:ring-blue-950/50 transition duration-150"
             />
             <p className="mt-1.5 text-[11px] text-slate-400 dark:text-slate-500">
               Tip: Copy the web link directly from your tab. Protocol is auto-corrected.

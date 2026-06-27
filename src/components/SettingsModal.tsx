@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  X, Settings, Eye, EyeOff, Save, Key, Github, HelpCircle, 
-  Download, Upload, CheckCircle, AlertTriangle, CloudRain, RefreshCw, Sun, Moon 
+  X, Settings, HelpCircle, Download, Upload, CheckCircle, 
+  RefreshCw, Sun, Moon, LogIn, Lock, Check, Eye, EyeOff,
+  Zap, Activity, Globe, ExternalLink
 } from 'lucide-react';
-import { syncToGitHub, fetchFromGitHub, GitHubConfig } from '../utils/github';
 import { AppState } from '../utils/db';
 
 interface SettingsModalProps {
@@ -15,6 +15,13 @@ interface SettingsModalProps {
   onImportState: (newState: AppState) => Promise<void>;
   darkMode: boolean;
   setDarkMode: (dark: boolean) => void;
+  currentUser: any;
+  isSyncingCloud: boolean;
+  onManualSync: () => Promise<void>;
+  onGoogleSignIn: () => Promise<void>;
+  onTriggerEditorModeToggle: () => void;
+  dnsSpeedup: boolean;
+  setDnsSpeedup: (enabled: boolean) => void;
 }
 
 export default function SettingsModal({
@@ -26,26 +33,51 @@ export default function SettingsModal({
   onImportState,
   darkMode,
   setDarkMode,
+  currentUser,
+  isSyncingCloud,
+  onManualSync,
+  onGoogleSignIn,
+  onTriggerEditorModeToggle,
+  dnsSpeedup,
+  setDnsSpeedup,
 }: SettingsModalProps) {
-  // Sync core Github states in localStorage
-  const [token, setToken] = useState(() => localStorage.getItem('radiopaedia_gh_token') || '');
-  const [owner, setOwner] = useState(() => localStorage.getItem('radiopaedia_gh_owner') || '');
-  const [repo, setRepo] = useState(() => localStorage.getItem('radiopaedia_gh_repo') || '');
-  const [showToken, setShowToken] = useState(false);
-
-  // Sync results state
-  const [syncing, setSyncing] = useState(false);
-  const [pulling, setPulling] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<{ text: string; type: 'success' | 'err' | 'info' | null }>({ text: '', type: null });
-  
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // States for DNS latency benchmarking
+  const [latency, setLatency] = useState<number | null>(null);
+  const [testing, setTesting] = useState<boolean>(false);
+
+  const runLatencyTest = async () => {
+    setTesting(true);
+    const start = performance.now();
+    try {
+      // Secure DNS Lookup via Cloudflare DNS-over-HTTPS json API
+      await fetch('https://cloudflare-dns.com/dns-query?name=radiopaedia.org&type=A', {
+        headers: { 'Accept': 'application/dns-json' },
+        mode: 'cors'
+      });
+      const duration = Math.round(performance.now() - start);
+      setLatency(duration);
+    } catch (err) {
+      console.warn("Direct DNS latency check failed, trying backup protocol:", err);
+      try {
+        const startFallback = performance.now();
+        await fetch('https://1.1.1.1', { mode: 'no-cors' });
+        const duration = Math.round(performance.now() - startFallback);
+        setLatency(duration);
+      } catch {
+        setLatency(null);
+      }
+    } finally {
+      setTesting(false);
+    }
+  };
+
   useEffect(() => {
-    // Persist configuration fields to client disk on changing
-    localStorage.setItem('radiopaedia_gh_token', token);
-    localStorage.setItem('radiopaedia_gh_owner', owner);
-    localStorage.setItem('radiopaedia_gh_repo', repo);
-  }, [token, owner, repo]);
+    if (isOpen) {
+      runLatencyTest();
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -67,74 +99,6 @@ export default function SettingsModal({
     return true;
   };
 
-  // Perform GitHub Commit-push sync
-  const handleGithubPush = async () => {
-    if (!token.trim() || !owner.trim() || !repo.trim()) {
-      setSyncMessage({ text: 'Please complete all GitHub repository credentials fields.', type: 'err' });
-      return;
-    }
-
-    setSyncing(true);
-    setSyncMessage({ text: 'Establishing secure tunnel & evaluating remote SHA...', type: 'info' });
-
-    try {
-      const config: GitHubConfig = {
-        token: token.trim(),
-        owner: owner.trim(),
-        repo: repo.trim(),
-        filePath: 'data.json'
-      };
-
-      const result = await syncToGitHub(config, JSON.stringify(currentState, null, 2));
-      setSyncMessage({ 
-        text: `Successfully synced & committed to server (SHA: ${result.sha.substring(0, 7)})`, 
-        type: 'success' 
-      });
-    } catch (error: any) {
-      setSyncMessage({ text: error.message || 'Synchronization failed. Check credentials.', type: 'err' });
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  // Fetch from GitHub
-  const handleGithubPull = async () => {
-    if (!token.trim() || !owner.trim() || !repo.trim()) {
-      setSyncMessage({ text: 'Please fill out all repository configurations to fetch contents.', type: 'err' });
-      return;
-    }
-
-    if (!window.confirm('Pulling will replace all local structures and cases on this phone/computer with the GitHub version. Continue?')) {
-      return;
-    }
-
-    setPulling(true);
-    setSyncMessage({ text: 'Downloading data.json from GitHub...', type: 'info' });
-
-    try {
-      const config: GitHubConfig = {
-        token: token.trim(),
-        owner: owner.trim(),
-        repo: repo.trim(),
-        filePath: 'data.json'
-      };
-
-      const fetchedStr = await fetchFromGitHub(config);
-      const importedJson = JSON.parse(fetchedStr);
-
-      if (validateStateStructure(importedJson)) {
-        await onImportState(importedJson);
-        setSyncMessage({ text: 'Successfully pulled latest database from server!', type: 'success' });
-      } else {
-        setSyncMessage({ text: 'Downloaded file layout is invalid. Valid categories expected.', type: 'err' });
-      }
-    } catch (error: any) {
-      setSyncMessage({ text: error.message || 'Pull request failed.', type: 'err' });
-    } finally {
-      setPulling(false);
-    }
-  };
-
   // Standard static JSON export
   const handleLocalExport = () => {
     try {
@@ -143,7 +107,7 @@ export default function SettingsModal({
       const url = URL.createObjectURL(dataBlob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `radiopaedia-cases-${new Date().toISOString().split('T')[0]}.json`;
+      link.download = `casestacks-clinical-registry-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -174,7 +138,7 @@ export default function SettingsModal({
             alert('Collection loaded successfully!');
           }
         } else {
-          alert('Error: Imported file does not follow the correct Radiopaedia data structure template.');
+          alert('Error: Imported file does not follow the correct CaseStacks registry structure template.');
         }
       } catch (err) {
         alert('Error parsing uploaded file. Make sure file is valid JSON.');
@@ -236,130 +200,205 @@ export default function SettingsModal({
               </div>
 
               {/* Editor mode checklist */}
-              <div className="flex items-center justify-between border-t border-slate-200/50 pt-3 dark:border-slate-750">
-                <div>
-                  <label htmlFor="editor-checkbox" className="text-sm font-semibold block text-slate-800 dark:text-slate-200">
-                    👨‍⚕️ Curator / Editor Mode
-                  </label>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Enable writing, deletions, and adding elements
-                  </span>
+              <div className="flex flex-col border-t border-slate-200/50 pt-3 dark:border-slate-750">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label htmlFor="editor-toggle-switch" className="text-sm font-semibold block text-slate-800 dark:text-slate-200">
+                      👨‍⚕️ Curator / Editor Mode
+                    </label>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Enable writing, deletions, reorganizing, and adding elements
+                    </span>
+                  </div>
+                  <button
+                    id="editor-toggle-switch"
+                    type="button"
+                    onClick={onTriggerEditorModeToggle}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                      editorMode ? 'bg-blue-600' : 'bg-slate-200 dark:bg-slate-700'
+                    }`}
+                    role="switch"
+                    aria-checked={editorMode}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                        editorMode ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
                 </div>
-                <input
-                  id="editor-checkbox"
-                  type="checkbox"
-                  checked={editorMode}
-                  onChange={(e) => setEditorMode(e.target.checked)}
-                  className="h-5 w-5 rounded-md border-slate-300 text-blue-600 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-blue-950"
-                />
               </div>
             </div>
           </div>
 
-          {/* Section 2: Github Cloud Sync */}
+          {/* Section 2: Google Cloud Sync */}
           <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 shadow-sm">
             <div className="flex items-center gap-2 mb-1">
-              <Github className="h-4.5 w-4.5 text-blue-500" />
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
-                Cloud Sync (GitHub Sync)
+              <RefreshCw className="h-4.5 w-4.5 text-blue-500" />
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 block pb-0.5">
+                Google Sync Service
               </h4>
             </div>
-            <p className="text-[11px] text-slate-400 dark:text-slate-500 mb-4">
-              Allows cross-device metadata synchronizations. Overwrites require a personal access token with repository read/write access scope.
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 mb-4 leading-normal">
+              Back up your entire medical database to secure Firebase Cloud Storage. Pull, write, and persist edits across your devices.
             </p>
 
-            <div className="space-y-3.5">
-              {/* Token field */}
-              <div>
-                <label htmlFor="github-token" className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                  GitHub Personal Access Token (Classic / Fine-grained)
-                </label>
-                <div className="relative">
-                  <input
-                    id="github-token"
-                    type={showToken ? 'text' : 'password'}
-                    placeholder="ghp_xxxxxxxxxxxx"
-                    value={token}
-                    onChange={(e) => setToken(e.target.value)}
-                    className="w-full rounded-lg border border-slate-300 bg-slate-50 pr-10 pl-4 py-2 text-xs text-slate-900 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white focus:border-blue-500"
-                  />
+            <div className="space-y-3">
+              {currentUser ? (
+                <div className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100/60 dark:border-blue-900/30 rounded-lg flex items-center justify-between">
+                  <div className="overflow-hidden mr-2">
+                    <span className="text-xs font-bold block text-slate-800 dark:text-slate-200">
+                      Cloud Account Connected
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate block font-mono" title={currentUser.email}>
+                      {currentUser.email}
+                    </span>
+                  </div>
+                  
                   <button
-                    id="token-visibility-toggle"
+                    id="modal-google-sync-btn"
                     type="button"
-                    onClick={() => setShowToken(!showToken)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                    onClick={onManualSync}
+                    disabled={isSyncingCloud}
+                    className="shrink-0 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400/80 dark:bg-blue-500 dark:hover:bg-blue-600 dark:disabled:bg-blue-600/50 px-3.5 py-1.5 text-xs text-white transition flex items-center gap-1.5 font-semibold"
                   >
-                    {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    <RefreshCw className={`h-3 w-3 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+                    {isSyncingCloud ? 'Syncing...' : 'Sync Now'}
                   </button>
                 </div>
-              </div>
-
-              {/* Owner & Repo Side-by-Side */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="github-owner" className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                    Repository Owner
-                  </label>
-                  <input
-                    id="github-owner"
-                    type="text"
-                    placeholder="e.g., medicalcurator"
-                    value={owner}
-                    onChange={(e) => setOwner(e.target.value)}
-                    className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-900 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white focus:border-blue-500"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="github-repo" className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                    Repository Name
-                  </label>
-                  <input
-                    id="github-repo"
-                    type="text"
-                    placeholder="e.g., radiopaedia-cases"
-                    value={repo}
-                    onChange={(e) => setRepo(e.target.value)}
-                    className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-900 outline-none dark:border-slate-750 dark:bg-slate-850 dark:text-white focus:border-blue-500"
-                  />
-                </div>
-              </div>
-
-              {/* Sync Message Display */}
-              {syncMessage.text && (
-                <div className={`mt-2 rounded-lg p-2.5 text-xs flex items-start gap-2 border ${
-                  syncMessage.type === 'success' 
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-950/25 dark:text-emerald-400 dark:border-emerald-950/40' 
-                    : syncMessage.type === 'err'
-                    ? 'bg-rose-50 text-rose-700 border-rose-100 dark:bg-rose-950/25 dark:text-rose-400 dark:border-rose-950/40'
-                    : 'bg-blue-50 text-blue-700 border-blue-100 dark:bg-blue-950/25 dark:text-blue-400 dark:border-blue-950/40'
-                }`}>
-                  {syncMessage.type === 'success' && <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />}
-                  {syncMessage.type === 'err' && <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />}
-                  {syncMessage.type === 'info' && <RefreshCw className="h-4 w-4 shrink-0 mt-0.5 animate-spin" />}
-                  <span>{syncMessage.text}</span>
+              ) : (
+                <div className="p-3 bg-amber-50/50 dark:bg-amber-950/20 border border-amber-100/60 dark:border-amber-900/30 rounded-lg flex items-center justify-between">
+                  <div className="mr-2">
+                    <span className="text-xs font-bold block text-slate-850 dark:text-amber-300">
+                      Syncing Disabled
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-450 block">
+                      Saved locally. Sign in to sync your changes.
+                    </span>
+                  </div>
+                  
+                  <button
+                    id="modal-google-login-btn"
+                    type="button"
+                    onClick={onGoogleSignIn}
+                    className="shrink-0 rounded-lg bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 px-3.5 py-1.5 text-xs text-white transition flex items-center gap-1.5 font-semibold"
+                  >
+                    <LogIn className="h-3.5 w-3.5" />
+                    Connect Workspace
+                  </button>
                 </div>
               )}
+            </div>
+          </div>
 
-              {/* Submit Buttons */}
-              <div className="flex gap-2 pt-1 border-t border-slate-100 dark:border-slate-800">
+          {/* Section: Cloudflare 1.1.1.1 Image Loading Accelerator */}
+          <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 shadow-sm">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Zap className="h-4.5 w-4.5 text-amber-500 fill-amber-500/20" />
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 block pb-0.5">
+                  1.1.1.1 Image Accelerator
+                </h4>
+              </div>
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-900/30 px-2 py-0.5 rounded-lg select-none">
+                Smart Cache
+              </span>
+            </div>
+            
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 mb-4 leading-normal">
+              Pre-warms TCP handshakes and resolves Radiopaedia image CDN queries instantly. Enable active edge acceleration or configure system secure DNS.
+            </p>
+
+            <div className="space-y-3">
+              {/* DNS Speedup Toggle */}
+              <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-850 border border-slate-100 dark:border-slate-800 rounded-lg">
+                <div>
+                  <span className="text-xs font-bold block text-slate-800 dark:text-slate-200">
+                    Active Edge Preconnection
+                  </span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
+                    Preconnects browser socket pools to Cloudflare CDN
+                  </span>
+                </div>
                 <button
-                  id="gh-sync-push-btn"
-                  onClick={handleGithubPush}
-                  disabled={syncing || pulling}
-                  className="flex-1 rounded-lg bg-blue-600 py-2.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition flex items-center justify-center gap-1.5 shadow-md shadow-blue-500/10"
+                  id="dns-speedup-toggle"
+                  type="button"
+                  onClick={() => setDnsSpeedup(!dnsSpeedup)}
+                  className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                    dnsSpeedup ? 'bg-amber-500' : 'bg-slate-200 dark:bg-slate-700'
+                  }`}
+                  role="switch"
+                  aria-checked={dnsSpeedup}
                 >
-                  <Upload className={`h-3.5 w-3.5 ${syncing ? 'animate-bounce' : ''}`} />
-                  {syncing ? 'Uploading...' : 'Sync to GitHub'}
+                  <span
+                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                      dnsSpeedup ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
                 </button>
-                <button
-                  id="gh-sync-pull-btn"
-                  onClick={handleGithubPull}
-                  disabled={syncing || pulling}
-                  className="flex-1 rounded-lg border border-slate-300 hover:border-slate-400 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 py-2.5 text-xs font-medium disabled:opacity-50 transition flex items-center justify-center gap-1.5"
-                >
-                  <Download className={`h-3.5 w-3.5 ${pulling ? 'animate-bounce' : ''}`} />
-                  {pulling ? 'Downloading...' : 'Pull from GitHub'}
-                </button>
+              </div>
+
+              {/* Dynamic Latency Checker */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-850 border border-slate-100 dark:border-slate-800 rounded-lg flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-bold block text-slate-800 dark:text-slate-200 flex items-center gap-1">
+                    <Activity className="h-3.5 w-3.5 text-emerald-500 animate-pulse" />
+                    Real-time Latency Bench
+                  </span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
+                    Round-trip latency to Cloudflare Secure DoH Edge
+                  </span>
+                </div>
+
+                <div className="text-right">
+                  {testing ? (
+                    <span className="text-xs font-mono text-slate-400 dark:text-slate-500 animate-pulse block">
+                      Pinging...
+                    </span>
+                  ) : latency !== null ? (
+                    <div className="flex flex-col items-end">
+                      <span className="text-xs font-bold font-mono text-emerald-500 block">
+                        {latency} ms
+                      </span>
+                      <span className="text-[8px] uppercase tracking-wider font-bold text-emerald-600 block">
+                        Excellent Connection
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      id="retry-latency-btn"
+                      type="button"
+                      onClick={runLatencyTest}
+                      className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      Measure
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Secure DNS configuration steps */}
+              <div className="p-3 bg-blue-50/40 dark:bg-blue-950/10 border border-blue-100/40 dark:border-blue-900/20 rounded-lg">
+                <span className="text-xs font-bold text-blue-700 dark:text-blue-300 block mb-1">
+                  💡 How to Enable System-Wide 1.1.1.1
+                </span>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  For maximum rendering speeds, configure Secure DNS in your browser settings: search <strong className="text-slate-700 dark:text-slate-300">"Secure DNS"</strong> or <strong className="text-slate-700 dark:text-slate-300">"DNS over HTTPS"</strong>, select <strong className="text-slate-700 dark:text-slate-300">Custom</strong>, and choose <strong className="text-slate-700 dark:text-slate-300">Cloudflare (1.1.1.1)</strong>.
+                </p>
+                <div className="mt-2 flex justify-between items-center border-t border-blue-100/40 dark:border-blue-900/20 pt-1.5">
+                  <span className="text-[9px] text-slate-400 dark:text-slate-500">
+                    Direct Official Guide:
+                  </span>
+                  <a 
+                    href="https://1.1.1.1" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
+                  >
+                    1.1.1.1 WARP
+                    <ExternalLink className="h-2.5 w-2.5" />
+                  </a>
+                </div>
               </div>
             </div>
           </div>
